@@ -13,12 +13,12 @@ zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
 # Credenciales
-DB_SCADA = dict(st.secrets["db_scada"])
-DB_INFORME = dict(st.secrets["db_informe"])
-DB_POSTGRES = dict(st.secrets["db_postgres"])
+DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
+DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
+DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
 CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
-# --- MAPEOS COMPLETOS (RECUPERADOS) ---
+# Mapeos Completos
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)':                  '_Caudal',
     'PRESION_(kg/cm2)':                '_Presion',
@@ -72,29 +72,30 @@ def consultar_datos_postgres():
     try:
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
-        query = 'SELECT * FROM public."Pozos" ORDER BY "ID" ASC'
-        return pd.read_sql(query, eng_pg)
+        return pd.read_sql('SELECT * FROM public."Pozos" ORDER BY "ID" ASC', eng_pg)
     except Exception as e:
         return f"Error en Postgres: {str(e)}"
 
 def ejecutar_sincronizacion_total():
     start_time = time.time()
-    st.session_state.last_logs = [] 
+    st.session_state.last_logs = []
     logs = []
-    progreso_bar = st.progress(0, text="Iniciando...")
+    progreso_bar = st.progress(0, text="Preparando sincronización... 0%")
+    status_text = st.empty()
     filas_pg = 0
     
     try:
         # 1. Google Sheets
+        progreso_bar.progress(10, text="Leyendo Google Sheets... 10%")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
-        if 'POZOS' not in df.columns: return ["❌ Error: Columna 'POZOS' no hallada."]
+        if 'POZOS' not in df.columns: return ["❌ Error: No se encontró la columna 'POZOS'."]
         if 'FECHA_ACTUALIZACION' in df.columns:
             df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
-        progreso_bar.progress(25)
-
+        
         # 2. SCADA
+        progreso_bar.progress(40, text="Consultando Base de Datos SCADA... 40%")
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
         for p_id in MAPEO_SCADA: all_tags.extend(MAPEO_SCADA[p_id].values())
@@ -106,10 +107,10 @@ def ejecutar_sincronizacion_total():
                 if not val.empty and col_excel in df.columns:
                     df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
         conn_s.close()
-        logs.append("🧬 SCADA: Valores inyectados.")
-        progreso_bar.progress(50)
-
+        logs.append("🧬 SCADA: Valores inyectados correctamente.")
+        
         # 3. MySQL
+        progreso_bar.progress(70, text="Actualizando tabla INFORME... 70%")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
@@ -117,9 +118,9 @@ def ejecutar_sincronizacion_total():
             df_sql = df.replace({np.nan: None, pd.NaT: None})
             df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
-        progreso_bar.progress(75)
-
+        
         # 4. Postgres
+        progreso_bar.progress(85, text="Sincronizando con QGIS (Postgres)... 85%")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         with eng_pg.begin() as conn:
@@ -138,10 +139,12 @@ def ejecutar_sincronizacion_total():
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
         
-        logs.append(f"🐘 Postgres: {filas_pg} filas actualizadas.")
-        logs.append(f"⏱️ DURACIÓN: {round(time.time() - start_time, 2)}s.")
+        logs.append(f"🐘 Postgres: Tabla POZOS actualizada ({filas_pg} filas).")
+        logs.append(f"⏱️ DURACIÓN DEL PROCESO: {round(time.time() - start_time, 2)} segundos.")
         logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
-        progreso_bar.progress(100)
+        progreso_bar.progress(100, text="Sincronización finalizada al 100%")
+        time.sleep(1)
+        status_text.empty()
         return logs
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
@@ -168,7 +171,7 @@ with tab1:
             if st.button("🚀 FORZAR CARGA", use_container_width=True):
                 st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-    # Consola con fix para TypeError
+    # Consola blindada
     if 'last_logs' not in st.session_state: st.session_state.last_logs = ["SISTEMA EN ESPERA..."]
     log_txt = "<br>".join([str(l) for l in st.session_state.last_logs])
     st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
@@ -180,7 +183,7 @@ with tab2:
         st.rerun()
     res = consultar_datos_postgres()
     if isinstance(res, pd.DataFrame):
-        st.dataframe(res, use_container_width=True)
+        st.dataframe(res, use_container_width=True, hide_index=True)
     else:
         st.error(res)
 
@@ -196,10 +199,9 @@ if st.session_state.running:
         sig = ((total_m // intervalo) + 1) * intervalo
         prox = ahora.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=sig)
 
-    st.sidebar.metric("⏳ PRÓXIMA CARGA:", str(prox - ahora).split('.')[0])
+    st.sidebar.metric("⏳ PRÓXIMA CARGA EN:", str(prox - ahora).split('.')[0])
     if (prox - ahora).total_seconds() <= 1:
         st.session_state.last_logs = ejecutar_sincronizacion_total()
         st.rerun()
     time.sleep(1)
     st.rerun()
-
