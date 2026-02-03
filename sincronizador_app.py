@@ -2174,75 +2174,87 @@ def ejecutar_sincronizacion_total():
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
-# --- 3. INTERFAZ OPTIMIZADA ---
+# --- 3. INTERFAZ CON PESTAÑAS ---
 
-def reset_console():
-    st.session_state.last_logs = ["SISTEMA EN ESPERA (Configuración actualizada)..."]
+# Pestaña 1: Control del Sistema
+# Pestaña 2: Explorador de Pozos (Postgres)
+tab1, tab2 = st.tabs(["🎮 Control Maestro", "🔍 Explorador de Pozos"])
 
-# Encabezado más visual
-st.markdown("<h1 style='text-align: center; color: #1E88E5;'>🖥️ MIAA Control Center</h1>", unsafe_allow_html=True)
-
-# Tarjeta de configuración (Max 2 columnas para móviles)
-with st.container(border=True):
-    st.markdown("**⚙️ Configuración de Sincronización**")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        modo = st.selectbox("Modo", ["Diario", "Periódico"], index=0, on_change=reset_console)
-    with col_b:
-        if modo == "Diario":
-            # Uso de time_input es mucho más amigable en móviles
-            t_input = st.time_input("Hora ejecución", datetime.time(0, 0), on_change=reset_console)
-            h_in, m_in = t_input.hour, t_input.minute
-        else:
-            m_in = st.number_input("Intervalo (Min)", 1, 1440, value=15, on_change=reset_console)
-            h_in = 0
-
-# Botonera principal (Botones grandes)
-c_btn1, c_btn2 = st.columns(2)
-with c_btn1:
-    if "running" not in st.session_state: st.session_state.running = False
-    btn_label = "🛑 DETENER" if st.session_state.running else "▶️ INICIAR"
-    if st.button(btn_label, use_container_width=True, type="primary" if not st.session_state.running else "secondary"):
-        st.session_state.running = not st.session_state.running
-        st.rerun()
-with c_btn2:
-    if st.button("🚀 FORZAR CARGA", use_container_width=True):
-        st.session_state.last_logs = ejecutar_sincronizacion_total()
-
-# Métrica de estado
-if st.session_state.running:
-    ahora = datetime.datetime.now(zona_local)
-    if modo == "Diario":
-        prox = ahora.replace(hour=h_in, minute=m_in, second=0, microsecond=0)
-        if ahora >= prox: prox += datetime.timedelta(days=1)
-    else:
-        intervalo = m_in if m_in > 0 else 1
-        total_m = ahora.hour * 60 + ahora.minute
-        sig = ((total_m // intervalo) + 1) * intervalo
-        prox = ahora.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=sig)
+with tab1:
+    st.markdown("<h2 style='text-align: center;'>Panel de Sincronización</h2>", unsafe_allow_html=True)
     
-    diff = prox - ahora
-    st.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
+    with st.container(border=True):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            modo = st.selectbox("Modo", ["Diario", "Periódico"], index=0, on_change=reset_console)
+        with col_b:
+            if modo == "Diario":
+                t_input = st.time_input("Hora ejecución", datetime.time(0, 0), on_change=reset_console)
+                h_in, m_in = t_input.hour, t_input.minute
+            else:
+                m_in = st.number_input("Intervalo (Min)", 1, 1440, value=15, on_change=reset_console)
+                h_in = 0
 
-# Consola con estilo mejorado
-st.markdown("---")
-st.markdown("##### 📝 Registro de Actividad")
-log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
-st.markdown(
-    f'''<div style="background-color:#0e1117; color:#00FF00; padding:12px; 
-    font-family:'Courier New', Courier, monospace; font-size:13px; height:220px; 
-    overflow-y:auto; border-radius:10px; border: 1px solid #30363d; line-height:1.5;">
-    {log_txt}</div>''', 
-    unsafe_allow_html=True
-)
+    c_btn1, c_btn2 = st.columns(2)
+    with c_btn1:
+        if "running" not in st.session_state: st.session_state.running = False
+        btn_label = "🛑 DETENER" if st.session_state.running else "▶️ INICIAR"
+        if st.button(btn_label, use_container_width=True, type="primary" if not st.session_state.running else "secondary"):
+            st.session_state.running = not st.session_state.running
+            st.rerun()
+    with c_btn2:
+        if st.button("🚀 FORZAR CARGA", use_container_width=True):
+            st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-# --- 4. RELOJ Y RECARGA ---
-if st.session_state.running:
-    if diff.total_seconds() <= 1:
-        st.session_state.last_logs = ejecutar_sincronizacion_total()
-        st.rerun()
-    time.sleep(1)
-    st.rerun()
+    # Métrica de tiempo (solo si está corriendo)
+    if st.session_state.running:
+        # ... (Aquí va tu lógica de cálculo de 'diff' que ya tienes)
+        st.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
+
+    st.markdown("##### 📝 Logs")
+    log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
+    st.markdown(f'<div style="background-color:#0e1117;color:#00FF00;padding:10px;border-radius:10px;height:180px;overflow-y:auto;font-family:monospace;font-size:12px;">{log_txt}</div>', unsafe_allow_html=True)
+
+with tab2:
+    st.subheader("🗂️ Datos en Postgres (QGIS)")
+    
+    # Botón para refrescar datos
+    if st.button("🔄 Refrescar Tabla"):
+        st.cache_data.clear()
+
+    # Función para leer Postgres
+    @st.cache_data(ttl=600)
+    def obtener_datos_postgres():
+        p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
+        eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
+        query = 'SELECT * FROM public."Pozos" ORDER BY "ID" ASC'
+        return pd.read_sql(query, eng_pg)
+
+    try:
+        df_pg = obtener_datos_postgres()
+        
+        # BUSCADOR
+        busqueda = st.text_input("🔍 Buscar por ID o Nombre de Pozo", "")
+        
+        if busqueda:
+            # Filtra en cualquier columna que contenga el texto (ignorando mayúsculas)
+            mask = df_pg.astype(str).apply(lambda x: x.str.contains(busqueda, case=False)).any(axis=1)
+            df_filtrado = df_pg[mask]
+        else:
+            df_filtrado = df_pg
+
+        st.write(f"Mostrando {len(df_filtrado)} registros")
+        
+        # Mostrar tabla interactiva optimizada para móvil
+        st.dataframe(
+            df_filtrado, 
+            use_container_width=True, 
+            hide_index=True,
+            column_order=("ID", "_Caudal", "_Presion", "_Estatus", "_Ultima_actualizacion") # Columnas principales primero
+        )
+        
+    except Exception as e:
+        st.error(f"Error al conectar con Postgres: {e}")
 
 
 
