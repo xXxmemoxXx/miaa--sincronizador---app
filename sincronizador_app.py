@@ -2097,10 +2097,10 @@ MAPEO_SCADA = {
 # --- 2. LÓGICA DE PROCESAMIENTO ---
 def ejecutar_sincronizacion_total():
     start_time = time.time()
-    st.session_state.last_logs = []
+    st.session_state.last_logs = [] 
     logs = []
-    # AQUÍ ESTÁ LA BARRA CON TEXTO Y PORCENTAJE
-    progreso_bar = st.progress(0, text="Iniciando sincronización... 0%")
+    # BARRA DE PROGRESO CON TEXTO Y PORCENTAJE
+    progreso_bar = st.progress(0, text="Iniciando... 0%")
     filas_pg = 0
     
     try:
@@ -2111,20 +2111,51 @@ def ejecutar_sincronizacion_total():
 
         progreso_bar.progress(40, text="🧬 Consultando SCADA... 40%")
         conn_s = mysql.connector.connect(**DB_SCADA)
-        # (Lógica simplificada de SCADA para brevedad, igual a la original)
+        all_tags = []
+        for p_id in MAPEO_SCADA: all_tags.extend(MAPEO_SCADA[p_id].values())
+        query = f"SELECT r.NAME, h.VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME IN ({','.join(['%s']*len(all_tags))}) AND h.FECHA >= NOW() - INTERVAL 1 DAY ORDER BY h.FECHA DESC"
+        df_scada = pd.read_sql(query, conn_s, params=all_tags).drop_duplicates('NAME')
+        for p_id, config in MAPEO_SCADA.items():
+            for col_excel, tag_name in config.items():
+                val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
+                if not val.empty and col_excel in df.columns:
+                    df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
         conn_s.close()
-        logs.append("🧬 SCADA: Datos obtenidos.")
+        logs.append("🧬 SCADA: Datos inyectados.")
 
         progreso_bar.progress(70, text="💾 Actualizando MySQL... 70%")
-        # ... (Actualización de MySQL INFORME)
+        p_my = urllib.parse.quote_plus(DB_INFORME['password'])
+        eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
+        with eng_my.begin() as conn:
+            conn.execute(text("TRUNCATE TABLE INFORME"))
+            df_sql = df.replace({np.nan: None, pd.NaT: None})
+            df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
         logs.append("✅ MySQL: Tabla INFORME ok.")
 
         progreso_bar.progress(90, text="🐘 Sincronizando Postgres... 90%")
-        # ... (Actualización de Postgres)
+        p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
+        eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
+        with eng_pg.begin() as conn:
+            for _, row in df.iterrows():
+                id_val = str(row['ID']).strip() if pd.notnull(row['ID']) else None
+                if id_val and id_val != "nan":
+                    params = {'id': id_val}
+                    sets = []
+                    for csv_col, pg_col in MAPEO_POSTGRES.items():
+                        if csv_col in df.columns:
+                            val = row[csv_col]
+                            if pd.isna(val) or str(val).lower() == 'nan': clean_val = None
+                            elif pg_col == '_Ultima_actualizacion': clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
+                            else: clean_val = val
+                            params[pg_col] = clean_val
+                            sets.append(f'"{pg_col}" = :{pg_col}')
+                    if sets:
+                        res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
+                        filas_pg += res.rowcount
         
         duracion = round(time.time() - start_time, 2)
-        logs.append(f"⏱️ Tiempo total: {duracion}s")
-        
+        logs.append(f"🐘 Postgres: {filas_pg} filas.")
+        logs.append(f"⏱️ Tiempo: {duracion}s")
         progreso_bar.progress(100, text="🚀 ¡Éxito al 100%!")
         time.sleep(1.5)
         progreso_bar.empty()
@@ -2136,12 +2167,12 @@ def ejecutar_sincronizacion_total():
 def reset_console():
     st.session_state.last_logs = ["SISTEMA EN ESPERA (Configuración actualizada)..."]
 
-# --- 3. INTERFAZ CON PESTAÑAS (TABS) ---
-st.markdown("<h2 style='text-align: center; color: #1E88E5;'>MIAA Control Center</h2>", unsafe_allow_html=True)
+# --- 3. INTERFAZ CON PESTAÑAS ---
+st.markdown("<h1 style='text-align: center; color: #1E88E5;'>🖥️ MIAA Control Center</h1>", unsafe_allow_html=True)
 
-tab_control, tab_datos = st.tabs(["🎮 Panel de Control", "🔍 Base de Datos Postgres"])
+tab_panel, tab_db = st.tabs(["🎮 Panel de Control", "🔍 Explorador de Pozos"])
 
-with tab_control:
+with tab_panel:
     with st.container(border=True):
         col_a, col_b = st.columns(2)
         with col_a:
@@ -2165,40 +2196,54 @@ with tab_control:
         if st.button("🚀 FORZAR CARGA", use_container_width=True):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
+    # Métrica de tiempo
     if st.session_state.running:
-        # Lógica de cálculo de tiempo omitida por brevedad
-        st.metric("⏳ PRÓXIMA CARGA EN:", "Calculando...")
+        ahora = datetime.datetime.now(zona_local)
+        if modo == "Diario":
+            prox = ahora.replace(hour=h_in, minute=m_in, second=0, microsecond=0)
+            if ahora >= prox: prox += datetime.timedelta(days=1)
+        else:
+            intervalo = m_in if m_in > 0 else 1
+            total_m = ahora.hour * 60 + ahora.minute
+            sig = ((total_m // intervalo) + 1) * intervalo
+            prox = ahora.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=sig)
+        diff = prox - ahora
+        st.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
 
-    st.markdown("##### 📝 Registro de Actividad")
+    st.markdown("##### 📝 Logs de Actividad")
     log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
     st.markdown(f'<div style="background-color:#0e1117;color:#00FF00;padding:12px;border-radius:10px;height:200px;overflow-y:auto;font-family:monospace;font-size:12px;border:1px solid #30363d;">{log_txt}</div>', unsafe_allow_html=True)
 
-with tab_datos:
-    st.subheader("🗂️ Explorador de Pozos (Postgres)")
+with tab_db:
+    st.subheader("🗂️ Consulta de Datos (Postgres)")
     
-    @st.cache_data(ttl=300)
-    def fetch_pg_data():
-        pass_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
-        engine = create_engine(f"postgresql://{DB_POSTGRES['user']}:{pass_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
+    @st.cache_data(ttl=600)
+    def fetch_postgres():
+        p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
+        engine = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         return pd.read_sql('SELECT * FROM public."Pozos" ORDER BY "ID" ASC', engine)
 
     try:
-        df_pg = fetch_pg_data()
-        search = st.text_input("🔍 Buscar Pozo (ID o Nombre)", "")
-        if search:
-            df_pg = df_pg[df_pg.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
+        df_pg = fetch_postgres()
+        busqueda = st.text_input("🔍 Buscar pozo (Escribe ID o Nombre)...", "")
+        if busqueda:
+            df_pg = df_pg[df_pg.astype(str).apply(lambda x: x.str.contains(busqueda, case=False)).any(axis=1)]
         
         st.dataframe(df_pg, use_container_width=True, hide_index=True)
-        if st.button("🔄 Actualizar Datos"):
+        if st.button("🔄 Actualizar Base de Datos"):
             st.cache_data.clear()
             st.rerun()
     except Exception as e:
-        st.error(f"Error Postgres: {e}")
+        st.error(f"Error al conectar con Postgres: {e}")
 
-# --- 4. RECARGA AUTOMÁTICA ---
+# --- 4. RECARGA Y AUTOMATIZACIÓN ---
 if st.session_state.running:
+    if 'diff' in locals() and diff.total_seconds() <= 1:
+        st.session_state.last_logs = ejecutar_sincronizacion_total()
+        st.rerun()
     time.sleep(1)
     st.rerun()
+
 
 
 
