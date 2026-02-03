@@ -3,14 +3,13 @@ import pandas as pd
 import urllib.parse
 from sqlalchemy import create_engine, text
 import datetime
-import time
 import mysql.connector
 import pytz
 import numpy as np
 
 # --- 1. CONFIGURACIÓN ---
 zona_local = pytz.timezone('America/Mexico_City')
-st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
+st.set_page_config(page_title="MIAA Control Maestro App", layout="wide")
 
 # Credenciales
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
@@ -66,18 +65,16 @@ MAPEO_SCADA = {
 
 # --- 2. LÓGICA DE PROCESAMIENTO ---
 
-def ejecutar_sincronizacion_total():
-    start_time = time.time()
-    st.session_state.last_logs = [] 
+def ejecutar_sincronizacion():
     logs = []
-    progreso_bar = st.progress(0, text="Iniciando proceso...")
-    
+    progreso = st.progress(0)
     try:
-        # 1. Lectura Google Sheets
+        # 1. Leer Sheets
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
-        
-        # 2. SCADA con Regla de Validación (valor > 0)
+        progreso.progress(25)
+
+        # 2. SCADA con Regla: > 0
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
         for p_id in MAPEO_SCADA: all_tags.extend(MAPEO_SCADA[p_id].values())
@@ -87,26 +84,25 @@ def ejecutar_sincronizacion_total():
         
         for p_id, config in MAPEO_SCADA.items():
             for col_excel, tag_name in config.items():
-                res_scada = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
-                if not res_scada.empty:
-                    valor_scada = float(res_scada.values[0])
-                    # REGLA: Si es 0 o negativo, NO se sobreescribe el dato de Sheets
-                    if valor_scada > 0:
-                        df.loc[df['POZOS'] == p_id, col_excel] = round(valor_scada, 2)
-        
+                res = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
+                if not res.empty:
+                    val = float(res.values[0])
+                    if val > 0: # REGLA SOLICITADA: Solo escribir si es > 0
+                        df.loc[df['POZOS'] == p_id, col_excel] = round(val, 2)
         conn_s.close()
-        logs.append("🧬 SCADA: Sincronizado (Ceros y negativos omitidos).")
+        logs.append("✅ Datos SCADA validados y procesados.")
+        progreso.progress(50)
 
-        # 3. MySQL (Tabla INFORME)
+        # 3. MySQL Informe
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
             conn.execute(text("TRUNCATE TABLE INFORME"))
-            df_sql = df.replace({np.nan: None, pd.NaT: None})
-            df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
-        logs.append("✅ MySQL: Actualizado.")
+            df.replace({np.nan: None, pd.NaT: None}).to_sql('INFORME', con=conn, if_exists='append', index=False)
+        logs.append("✅ MySQL actualizado.")
+        progreso.progress(75)
 
-        # 4. Postgres (QGIS)
+        # 4. Postgres QGIS
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
@@ -116,93 +112,67 @@ def ejecutar_sincronizacion_total():
                 id_val = str(row['ID']).strip() if pd.notnull(row['ID']) else None
                 if id_val and id_val != "nan":
                     params = {'id': id_val}
-                    sets = []
+                    sets = [f'"{pg_col}" = :{pg_col}' for csv_col, pg_col in MAPEO_POSTGRES.items() if csv_col in df.columns]
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
-                            val = row[csv_col]
-                            # Limpieza para Postgres
-                            if pd.isna(val) or str(val).lower() == 'nan': clean_val = None
-                            else: clean_val = val
-                            params[pg_col] = clean_val
-                            sets.append(f'"{pg_col}" = :{pg_col}')
+                            params[pg_col] = None if pd.isna(row[csv_col]) else row[csv_col]
                     
                     if sets:
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
         
-        logs.append(f"🐘 Postgres: {filas_pg} registros sincronizados.")
-        logs.append(f"🚀 EXITOSO: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
-        progreso_bar.progress(100)
+        logs.append(f"✅ Postgres actualizado ({filas_pg} filas).")
+        logs.append(f"🚀 Sincronización terminada a las {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
+        progreso.progress(100)
         return logs
     except Exception as e:
-        return [f"❌ Error: {str(e)}"]
+        return [f"❌ Error crítico: {str(e)}"]
 
-@st.cache_data(ttl=10)
-def consultar_postgres():
+def obtener_datos_postgres():
     try:
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         return pd.read_sql('SELECT * FROM public."Pozos" ORDER BY "ID" ASC', eng_pg)
-    except:
+    except Exception as e:
+        st.error(f"Error Postgres: {e}")
         return pd.DataFrame()
 
-# --- 3. INTERFAZ ---
+# --- 3. INTERFAZ APP ---
 
-st.title("🖥️ MIAA Control Center")
+st.sidebar.title("📱 MIAA Control App")
+opcion = st.sidebar.selectbox("Seleccione Vista", ["Sincronizador", "Base de Datos QGIS"])
 
-# Usar Radio en el Sidebar como alternativa a pestañas si st.tabs falla por el rerun
-menu = st.sidebar.radio("MENÚ PRINCIPAL", ["Control de Sincronización", "Base de Datos Postgres"])
-
-if menu == "Control de Sincronización":
-    st.subheader("🎮 Panel de Operación")
-    with st.container(border=True):
-        col1, col2, col3, col4, col5 = st.columns([1.5, 1, 1, 1.5, 1.5])
-        with col1: modo = st.selectbox("Modo", ["Diario", "Periódico"])
-        with col2: h_in = st.number_input("Hora", 0, 23, value=0)
-        with col3: m_in = st.number_input("Min/Int", 0, 59, value=1)
-        with col4:
-            if "running" not in st.session_state: st.session_state.running = False
-            label = "🛑 PARAR" if st.session_state.running else "▶️ INICIAR"
-            if st.button(label, use_container_width=True):
-                st.session_state.running = not st.session_state.running
-                st.rerun()
-        with col5:
-            if st.button("🚀 FORZAR AHORA", use_container_width=True):
-                st.session_state.last_logs = ejecutar_sincronizacion_total()
-
-    log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
-    st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:monospace;height:400px;overflow-y:auto;border-radius:5px;">{log_txt}</div>', unsafe_allow_html=True)
-
-else:
-    st.subheader("🗄️ Tabla 'Pozos' en Postgres")
-    if st.button("🔄 Refrescar Tabla"):
-        st.cache_data.clear()
+if opcion == "Sincronizador":
+    st.header("⚡ Sincronización de Datos")
+    st.info("Esta acción actualizará MySQL y Postgres con los datos de Google Sheets y SCADA.")
     
-    df_pg = consultar_postgres()
+    if st.button("🚀 INICIAR SINCRONIZACIÓNHORA", use_container_width=True):
+        st.session_state.logs_app = ejecutar_sincronizacion()
+    
+    # Consola de Logs
+    logs = st.session_state.get('logs_app', ["Esperando instrucción..."])
+    st.markdown(f'''
+        <div style="background-color:#1e1e1e; color:#00ff00; padding:15px; border-radius:10px; font-family:monospace; min-height:200px;">
+            {"<br>".join(logs)}
+        </div>
+    ''', unsafe_allow_html=True)
+
+elif opcion == "Base de Datos QGIS":
+    st.header("🗄️ Base de Datos Postgres")
+    
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Refrescar"):
+            st.rerun()
+    
+    df_pg = obtener_datos_postgres()
     if not df_pg.empty:
-        st.dataframe(df_pg, use_container_width=True, height=700)
+        # Buscador sencillo
+        busqueda = st.text_input("🔍 Buscar pozo por ID o nombre...")
+        if busqueda:
+            df_pg = df_pg[df_pg.astype(str).apply(lambda x: x.str.contains(busqueda, case=False)).any(axis=1)]
+        
+        st.dataframe(df_pg, use_container_width=True, height=600)
+        st.caption(f"Registros encontrados: {len(df_pg)}")
     else:
-        st.warning("No hay conexión con la base de datos Postgres.")
-
-# --- 4. RELOJ (SIDEBAR PARA NO INTERRUMPIR) ---
-if st.session_state.running:
-    ahora = datetime.datetime.now(zona_local)
-    if modo == "Diario":
-        prox = ahora.replace(hour=h_in, minute=m_in, second=0, microsecond=0)
-        if ahora >= prox: prox += datetime.timedelta(days=1)
-    else:
-        intervalo = m_in if m_in > 0 else 1
-        total_m = ahora.hour * 60 + ahora.minute
-        sig = ((total_m // intervalo) + 1) * intervalo
-        prox = ahora.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=sig)
-
-    diff = prox - ahora
-    st.sidebar.divider()
-    st.sidebar.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
-    
-    if diff.total_seconds() <= 1:
-        st.session_state.last_logs = ejecutar_sincronizacion_total()
-        st.rerun()
-    
-    time.sleep(1)
-    st.rerun()
+        st.warning("No se pudo cargar la tabla de Postgres.")
