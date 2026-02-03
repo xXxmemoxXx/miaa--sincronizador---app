@@ -178,58 +178,32 @@ def ejecutar_sincronizacion_total():
 
 # --- 3. INTERFAZ CON PESTAÑAS ---
 
+# --- 3. INTERFAZ ---
+
 st.title("🖥️ MIAA Control Center")
 
-tab1, tab2 = st.tabs(["🔄 Control de Sincronización", "📊 Datos Postgres (QGIS)"])
+tab1, tab2 = st.tabs(["🔄 Sincronización Manual", "📊 Datos Postgres (QGIS)"])
 
 with tab1:
     with st.container(border=True):
-        c1, c2, c3, c4, c5 = st.columns([1.5, 1, 1, 1.5, 1.5])
-        with c1: modo = st.selectbox("Modo", ["Diario", "Periódico"], index=0)
-        with c2: h_in = st.number_input("Hora", 0, 23, value=0)
-        with c3: m_in = st.number_input("Min/Int", 0, 59, value=0)
-        with c4:
-            if "running" not in st.session_state: st.session_state.running = False
-            btn_label = "🛑 PARAR" if st.session_state.running else "▶️ INICIAR"
-            if st.button(btn_label, use_container_width=True):
-                st.session_state.running = not st.session_state.running
-                st.rerun()
-        with c5:
-            if st.button("🚀 FORZAR CARGA", use_container_width=True):
-                st.session_state.last_logs = ejecutar_sincronizacion_total()
+        st.subheader("Acciones del Sistema")
+        if st.button("🚀 FORZAR CARGA DE DATOS", use_container_width=True, type="primary"):
+            st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-    # Consola blindada contra TypeError
-    if 'last_logs' not in st.session_state: st.session_state.last_logs = ["SISTEMA EN ESPERA..."]
+    # Consola
+    if 'last_logs' not in st.session_state: st.session_state.last_logs = ["SISTEMA LISTO PARA CARGA MANUAL..."]
     log_txt = "<br>".join([str(l) for l in st.session_state.last_logs])
-    st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:300px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
 with tab2:
-    st.subheader("Visualización de Tabla 'Pozos' en Postgres")
+    st.subheader("Datos actuales en QGIS")
     if st.button("🔄 Refrescar Tabla"):
         st.cache_data.clear()
         st.rerun()
-    datos_pg = consultar_datos_postgres()
-    if isinstance(datos_pg, pd.DataFrame):
-        st.dataframe(datos_pg, use_container_width=True, hide_index=True)
+    res = consultar_datos_postgres()
+    if isinstance(res, pd.DataFrame):
+        st.dataframe(res, use_container_width=True, hide_index=True)
     else:
-        st.error(datos_pg)
+        st.error(res)
 
-# --- 4. RELOJ DE EJECUCIÓN (Sidebar para no estorbar) ---
-if st.session_state.running:
-    ahora = datetime.datetime.now(zona_local)
-    if modo == "Diario":
-        prox = ahora.replace(hour=h_in, minute=m_in, second=0, microsecond=0)
-        if ahora >= prox: prox += datetime.timedelta(days=1)
-    else:
-        intervalo = m_in if m_in > 0 else 1
-        total_m = ahora.hour * 60 + ahora.minute
-        sig = ((total_m // intervalo) + 1) * intervalo
-        prox = ahora.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=sig)
-
-    st.sidebar.metric("⏳ PRÓXIMA CARGA EN:", str(prox - ahora).split('.')[0])
-    if (prox - ahora).total_seconds() <= 1:
-        st.session_state.last_logs = ejecutar_sincronizacion_total()
-        st.rerun()
-    time.sleep(1)
-    st.rerun()
 
