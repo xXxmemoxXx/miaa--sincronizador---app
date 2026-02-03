@@ -12,28 +12,48 @@ import numpy as np
 zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
-# CSS para forzar que las pestañas parezcan pestañas y diseño de interfaz
+# CSS: Pestañas y Consola con fondo blanco
 st.markdown("""
     <style>
-    /* Estilo para las pestañas */
+    /* Contenedor de pestañas fondo blanco */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
-        background-color: #1e1e1e;
+        background-color: #FFFFFF; 
         padding: 10px 10px 0px 10px;
         border-radius: 10px 10px 0px 0px;
+        border-bottom: 2px solid #F0F2F6;
     }
+    
+    /* Pestañas individuales */
     .stTabs [data-baseweb="tab"] {
         height: 45px;
-        white-space: pre-wrap;
-        background-color: #333333;
+        background-color: #F8F9FA;
         border-radius: 5px 5px 0px 0px;
-        color: white;
-        gap: 1px;
+        color: #31333F;
         padding: 10px 20px;
+        border: 1px solid #DDDDDD;
+        border-bottom: none;
     }
+    
+    /* Pestaña activa */
     .stTabs [aria-selected="true"] {
         background-color: #007bff !important;
-        border-bottom: 2px solid white !important;
+        color: white !important;
+        font-weight: bold;
+    }
+
+    /* Estilo para la consola (Fondo Blanco, Letras Azul Oscuro) */
+    .consola-log {
+        background-color: #FFFFFF;
+        color: #003366; /* Azul Oscuro */
+        padding: 15px;
+        font-family: 'Consolas', monospace;
+        height: 350px;
+        overflow-y: auto;
+        border-radius: 8px;
+        border: 1px solid #CCCCCC;
+        line-height: 1.6;
+        box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -91,7 +111,7 @@ MAPEO_SCADA = {
     },
 }
 
-# --- 2. LÓGICA DE DATOS ---
+# --- 2. LÓGICA DE PROCESAMIENTO ---
 
 @st.cache_data(ttl=300)
 def consultar_datos_postgres():
@@ -115,12 +135,9 @@ def ejecutar_sincronizacion_total():
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
         if 'POZOS' not in df.columns: return ["❌ Error: No se encontró la columna 'POZOS'."]
-        if 'FECHA_ACTUALIZACION' in df.columns:
-            df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
-        logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         
-        # 2. SCADA con Regla de Validación
-        progreso_bar.progress(40, text="Consultando SCADA y validando valores... 40%")
+        # 2. SCADA con Regla: Si <= 0, ignorar y mantener valor de Sheets
+        progreso_bar.progress(40, text="Consultando SCADA... 40%")
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
         for p_id in MAPEO_SCADA: all_tags.extend(MAPEO_SCADA[p_id].values())
@@ -133,27 +150,25 @@ def ejecutar_sincronizacion_total():
                 val_scada = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
                 if not val_scada.empty:
                     valor_num = float(val_scada.values[0])
-                    # Regla P-002: Solo inyectar si es positivo
+                    # Regla P-002: Solo actualizar si es un valor positivo
                     if valor_num > 0:
-                        if col_excel in df.columns:
-                            df.loc[df['POZOS'] == p_id, col_excel] = round(valor_num, 2)
+                        df.loc[df['POZOS'] == p_id, col_excel] = round(valor_num, 2)
                     else:
-                        logs.append(f"⚠️ {p_id}: Valor {valor_num} en {col_excel} omitido (Sheets preservado).")
+                        logs.append(f"⚠️ {p_id}: Valor {valor_num} detectado en SCADA. Se mantuvo dato de Sheets.")
         conn_s.close()
-        logs.append("🧬 SCADA: Valores inyectados correctamente.")
+        logs.append("🧬 SCADA: Sincronización finalizada (regla de valores positivos aplicada).")
         
         # 3. MySQL
-        progreso_bar.progress(70, text="Actualizando tabla INFORME... 70%")
+        progreso_bar.progress(70, text="Actualizando MySQL... 70%")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
             conn.execute(text("TRUNCATE TABLE INFORME"))
             df_sql = df.replace({np.nan: None, pd.NaT: None})
             df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
-        logs.append("✅ MySQL: Tabla INFORME actualizada.")
         
-        # 4. Postgres con limpieza
-        progreso_bar.progress(85, text="Sincronizando con QGIS (Postgres)... 85%")
+        # 4. Postgres
+        progreso_bar.progress(85, text="Sincronizando Postgres (QGIS)... 85%")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         with eng_pg.begin() as conn:
@@ -166,10 +181,8 @@ def ejecutar_sincronizacion_total():
                         if csv_col in df.columns:
                             val = row[csv_col]
                             if pd.isna(val) or str(val).lower() == 'nan': clean_val = None
-                            elif pg_col == '_Ultima_actualizacion': clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
                             elif isinstance(val, str):
-                                s_val = val.replace(',', '')
-                                try: clean_val = float(s_val)
+                                try: clean_val = float(val.replace(',', ''))
                                 except: clean_val = val
                             else: clean_val = val
                             params[pg_col] = clean_val
@@ -179,33 +192,31 @@ def ejecutar_sincronizacion_total():
                         filas_pg += res.rowcount
         
         logs.append(f"🐘 Postgres: {filas_pg} filas actualizadas.")
-        logs.append(f"⏱️ DURACIÓN: {round(time.time() - start_time, 2)}s.")
+        logs.append(f"⏱️ Tiempo: {round(time.time() - start_time, 2)}s.")
         logs.append(f"🚀 ÉXITO: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
-        progreso_bar.progress(100, text="Sincronización finalizada al 100%")
+        progreso_bar.progress(100, text="Sincronización finalizada")
         return logs
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
-# --- 3. INTERFAZ (ORDEN SOLICITADO) ---
+# --- 3. INTERFAZ ---
 
-# Pestañas arriba de todo
 tab1, tab2 = st.tabs(["🔄 Sincronización Manual", "📊 Datos Postgres (QGIS)"])
 
 with tab1:
-    st.title("🖥️ MIAA Control Center") # Título debajo de pestañas
+    st.title("🖥️ MIAA Control Center")
     with st.container(border=True):
-        st.subheader("Control de Carga")
         if st.button("🚀 FORZAR CARGA DE DATOS", use_container_width=True, type="primary"):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-    # Consola
+    # Consola con fondo blanco y letras azul oscuro
     if 'last_logs' not in st.session_state: st.session_state.last_logs = ["SISTEMA LISTO PARA CARGA MANUAL..."]
     log_txt = "<br>".join([str(l) for l in st.session_state.last_logs])
-    st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:300px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="consola-log">{log_txt}</div>', unsafe_allow_html=True)
 
 with tab2:
-    st.title("🖥️ MIAA Control Center") # Título también aquí para consistencia
-    st.subheader("Datos actuales en QGIS")
+    st.title("🖥️ MIAA Control Center")
+    st.subheader("Datos actuales en la Base de Datos QGIS")
     if st.button("🔄 Refrescar Tabla"):
         st.cache_data.clear()
         st.rerun()
