@@ -16,9 +16,9 @@ st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
-CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'}
+CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
-# Mapeos
+# Mapeos Completos
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)':                  '_Caudal',
     'PRESION_(kg/cm2)':                '_Presion',
@@ -46,7 +46,7 @@ MAPEO_SCADA = {
         "AMP_L1":"PZ_002_TRC_CORR_L1",
         "AMP_L2":"PZ_002_TRC_CORR_L2",
         "AMP_L3":"PZ_002_TRC_CORR_L3",
-        "LONG_COLUMNA":"PZ_002_TRC_LONG_COLUM",
+        "LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM",
         "SUMERGENCIA":"PZ_002_TRC_SUMERG",
         "NIVEL_DINAMICO":"PZ_002_TRC_NIV_EST",
     },
@@ -59,7 +59,7 @@ MAPEO_SCADA = {
         "AMP_L1":"PZ_003_CORR_L1",
         "AMP_L2":"PZ_003_CORR_L2",
         "AMP_L3":"PZ_003_CORR_L3",
-        "LONG_COLUMNA":"PZ_003_LONG_COLUM",
+        "LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM",
         "SUMERGENCIA":"PZ_003_SUMERG",
         "NIVEL_DINAMICO":"PZ_003_NIV_EST",
     },
@@ -93,7 +93,7 @@ def ejecutar_sincronizacion_total():
             df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         
-        # 2. SCADA con Regla de Validación (0 o Negativos)
+        # 2. SCADA con Regla de Validación (Omitir 0 o Negativos)
         progreso_bar.progress(40, text="Consultando SCADA y validando valores... 40%")
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
@@ -105,19 +105,16 @@ def ejecutar_sincronizacion_total():
         for p_id, config in MAPEO_SCADA.items():
             for col_excel, tag_name in config.items():
                 val_scada = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
-                
                 if not val_scada.empty:
                     valor_num = float(val_scada.values[0])
-                    
-                    # --- REGLA: Si el valor es > 0 se usa SCADA, si no, se queda el de Sheets ---
+                    # REGLA: Solo inyectar si es mayor a 0, de lo contrario mantener Sheets
                     if valor_num > 0:
                         if col_excel in df.columns:
                             df.loc[df['POZOS'] == p_id, col_excel] = round(valor_num, 2)
                     else:
-                        logs.append(f"⚠️ {p_id}: Valor {valor_num} detectado en {col_excel}. Se mantuvo dato de Sheets.")
-        
+                        logs.append(f"⚠️ {p_id}: Valor {valor_num} en {col_excel} omitido (se usó Sheets).")
         conn_s.close()
-        logs.append("🧬 SCADA: Sincronización finalizada (valores inválidos omitidos).")
+        logs.append("🧬 SCADA: Valores inyectados correctamente.")
         
         # 3. MySQL
         progreso_bar.progress(70, text="Actualizando tabla INFORME... 70%")
@@ -129,7 +126,7 @@ def ejecutar_sincronizacion_total():
             df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         
-        # 4. Postgres
+        # 4. Postgres (Limpieza de comas integrada)
         progreso_bar.progress(85, text="Sincronizando con QGIS (Postgres)... 85%")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
@@ -142,7 +139,7 @@ def ejecutar_sincronizacion_total():
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
                             val = row[csv_col]
-                            
+                            # Limpieza para evitar InvalidTextRepresentation
                             if pd.isna(val) or str(val).lower() == 'nan': clean_val = None
                             elif pg_col == '_Ultima_actualizacion': clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
                             elif isinstance(val, str):
@@ -158,18 +155,18 @@ def ejecutar_sincronizacion_total():
                         filas_pg += res.rowcount
         
         logs.append(f"🐘 Postgres: {filas_pg} filas actualizadas.")
-        logs.append(f"⏱️ Tiempo: {round(time.time() - start_time, 2)}s.")
-        logs.append(f"🚀 ÉXITO: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
-        progreso_bar.progress(100, text="Sincronización al 100%")
+        logs.append(f"⏱️ DURACIÓN: {round(time.time() - start_time, 2)}s.")
+        logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
+        progreso_bar.progress(100, text="Sincronización finalizada al 100%")
         return logs
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
-# --- 3. INTERFAZ ---
+# --- 3. INTERFAZ CON PESTAÑAS ---
 
 st.title("🖥️ MIAA Control Center")
 
-tab1, tab2 = st.tabs(["🔄 Sincronización", "📊 Datos Postgres (QGIS)"])
+tab1, tab2 = st.tabs(["🔄 Control de Sincronización", "📊 Datos Postgres (QGIS)"])
 
 with tab1:
     with st.container(border=True):
@@ -187,22 +184,23 @@ with tab1:
             if st.button("🚀 FORZAR CARGA", use_container_width=True):
                 st.session_state.last_logs = ejecutar_sincronizacion_total()
 
+    # Consola blindada contra TypeError
     if 'last_logs' not in st.session_state: st.session_state.last_logs = ["SISTEMA EN ESPERA..."]
     log_txt = "<br>".join([str(l) for l in st.session_state.last_logs])
     st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
 with tab2:
-    st.subheader("Datos actuales en QGIS (Postgres)")
-    if st.button("🔄 Refrescar"):
+    st.subheader("Visualización de Tabla 'Pozos' en Postgres")
+    if st.button("🔄 Refrescar Tabla"):
         st.cache_data.clear()
         st.rerun()
-    res = consultar_datos_postgres()
-    if isinstance(res, pd.DataFrame):
-        st.dataframe(res, use_container_width=True, hide_index=True)
+    datos_pg = consultar_datos_postgres()
+    if isinstance(datos_pg, pd.DataFrame):
+        st.dataframe(datos_pg, use_container_width=True, hide_index=True)
     else:
-        st.error(res)
+        st.error(datos_pg)
 
-# --- 4. RELOJ ---
+# --- 4. RELOJ DE EJECUCIÓN (Sidebar para no estorbar) ---
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
     if modo == "Diario":
