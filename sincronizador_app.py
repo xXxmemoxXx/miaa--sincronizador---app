@@ -16,9 +16,9 @@ st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
-CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
+CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'}
 
-# Mapeos Completos
+# Mapeos
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)':                  '_Caudal',
     'PRESION_(kg/cm2)':                '_Presion',
@@ -46,7 +46,7 @@ MAPEO_SCADA = {
         "AMP_L1":"PZ_002_TRC_CORR_L1",
         "AMP_L2":"PZ_002_TRC_CORR_L2",
         "AMP_L3":"PZ_002_TRC_CORR_L3",
-        "LONGITUD_DE_COLUMNA":"PZ_002_TRC_LONG_COLUM",
+        "LONG_COLUMNA":"PZ_002_TRC_LONG_COLUM",
         "SUMERGENCIA":"PZ_002_TRC_SUMERG",
         "NIVEL_DINAMICO":"PZ_002_TRC_NIV_EST",
     },
@@ -59,7 +59,7 @@ MAPEO_SCADA = {
         "AMP_L1":"PZ_003_CORR_L1",
         "AMP_L2":"PZ_003_CORR_L2",
         "AMP_L3":"PZ_003_CORR_L3",
-        "LONGITUD_DE_COLUMNA":"PZ_003_LONG_COLUM",
+        "LONG_COLUMNA":"PZ_003_LONG_COLUM",
         "SUMERGENCIA":"PZ_003_SUMERG",
         "NIVEL_DINAMICO":"PZ_003_NIV_EST",
     },
@@ -81,7 +81,6 @@ def ejecutar_sincronizacion_total():
     st.session_state.last_logs = []
     logs = []
     progreso_bar = st.progress(0, text="Preparando sincronización... 0%")
-    status_text = st.empty()
     filas_pg = 0
     
     try:
@@ -94,20 +93,31 @@ def ejecutar_sincronizacion_total():
             df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         
-        # 2. SCADA
-        progreso_bar.progress(40, text="Consultando Base de Datos SCADA... 40%")
+        # 2. SCADA con Regla de Validación (0 o Negativos)
+        progreso_bar.progress(40, text="Consultando SCADA y validando valores... 40%")
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
         for p_id in MAPEO_SCADA: all_tags.extend(MAPEO_SCADA[p_id].values())
+        
         query = f"SELECT r.NAME, h.VALUE FROM vfitagnumhistory h JOIN VfiTagRef r ON h.GATEID = r.GATEID WHERE r.NAME IN ({','.join(['%s']*len(all_tags))}) AND h.FECHA >= NOW() - INTERVAL 1 DAY ORDER BY h.FECHA DESC"
         df_scada = pd.read_sql(query, conn_s, params=all_tags).drop_duplicates('NAME')
+        
         for p_id, config in MAPEO_SCADA.items():
             for col_excel, tag_name in config.items():
-                val = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
-                if not val.empty and col_excel in df.columns:
-                    df.loc[df['POZOS'] == p_id, col_excel] = round(float(val.values[0]), 2)
+                val_scada = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
+                
+                if not val_scada.empty:
+                    valor_num = float(val_scada.values[0])
+                    
+                    # --- REGLA: Si el valor es > 0 se usa SCADA, si no, se queda el de Sheets ---
+                    if valor_num > 0:
+                        if col_excel in df.columns:
+                            df.loc[df['POZOS'] == p_id, col_excel] = round(valor_num, 2)
+                    else:
+                        logs.append(f"⚠️ {p_id}: Valor {valor_num} detectado en {col_excel}. Se mantuvo dato de Sheets.")
+        
         conn_s.close()
-        logs.append("🧬 SCADA: Valores inyectados correctamente.")
+        logs.append("🧬 SCADA: Sincronización finalizada (valores inválidos omitidos).")
         
         # 3. MySQL
         progreso_bar.progress(70, text="Actualizando tabla INFORME... 70%")
@@ -133,18 +143,13 @@ def ejecutar_sincronizacion_total():
                         if csv_col in df.columns:
                             val = row[csv_col]
                             
-                            # --- LIMPIEZA DE COMAS PARA EVITAR EL ERROR DE TRACEBACK ---
-                            if pd.isna(val) or str(val).lower() == 'nan':
-                                clean_val = None
-                            elif pg_col == '_Ultima_actualizacion':
-                                clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
+                            if pd.isna(val) or str(val).lower() == 'nan': clean_val = None
+                            elif pg_col == '_Ultima_actualizacion': clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
                             elif isinstance(val, str):
-                                # Eliminamos comas para que Postgres lo acepte como double precision
                                 s_val = val.replace(',', '')
                                 try: clean_val = float(s_val)
                                 except: clean_val = val
-                            else:
-                                clean_val = val
+                            else: clean_val = val
                                 
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
@@ -152,12 +157,10 @@ def ejecutar_sincronizacion_total():
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
         
-        logs.append(f"🐘 Postgres: Tabla POZOS actualizada ({filas_pg} filas).")
-        logs.append(f"⏱️ DURACIÓN DEL PROCESO: {round(time.time() - start_time, 2)} segundos.")
-        logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
-        progreso_bar.progress(100, text="Sincronización finalizada al 100%")
-        time.sleep(1)
-        status_text.empty()
+        logs.append(f"🐘 Postgres: {filas_pg} filas actualizadas.")
+        logs.append(f"⏱️ Tiempo: {round(time.time() - start_time, 2)}s.")
+        logs.append(f"🚀 ÉXITO: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
+        progreso_bar.progress(100, text="Sincronización al 100%")
         return logs
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
@@ -166,7 +169,7 @@ def ejecutar_sincronizacion_total():
 
 st.title("🖥️ MIAA Control Center")
 
-tab1, tab2 = st.tabs(["🔄 Control de Sincronización", "📊 Datos Postgres (QGIS)"])
+tab1, tab2 = st.tabs(["🔄 Sincronización", "📊 Datos Postgres (QGIS)"])
 
 with tab1:
     with st.container(border=True):
@@ -184,7 +187,6 @@ with tab1:
             if st.button("🚀 FORZAR CARGA", use_container_width=True):
                 st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-    # Consola blindada contra TypeError
     if 'last_logs' not in st.session_state: st.session_state.last_logs = ["SISTEMA EN ESPERA..."]
     log_txt = "<br>".join([str(l) for l in st.session_state.last_logs])
     st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
