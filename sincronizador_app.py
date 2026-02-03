@@ -70,21 +70,14 @@ def ejecutar_sincronizacion_total():
     start_time = time.time()
     st.session_state.last_logs = [] 
     logs = []
-    progreso_bar = st.progress(0, text="Iniciando...")
-    status_text = st.empty()
-    filas_pg = 0
+    progreso_bar = st.progress(0, text="Iniciando proceso...")
     
     try:
         # 1. Lectura Google Sheets
-        progreso_bar.progress(10, text="Leyendo Google Sheets...")
         df = pd.read_csv(CSV_URL)
         df.columns = [col.strip().replace('\n', ' ') for col in df.columns]
         
-        if 'POZOS' not in df.columns:
-            return [f"❌ Error: No se encontró la columna 'POZOS'."]
-
-        # 2. SCADA con Validación de valor > 0
-        progreso_bar.progress(30, text="Consultando SCADA...")
+        # 2. SCADA con Regla de Validación (valor > 0)
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
         for p_id in MAPEO_SCADA: all_tags.extend(MAPEO_SCADA[p_id].values())
@@ -97,28 +90,27 @@ def ejecutar_sincronizacion_total():
                 res_scada = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
                 if not res_scada.empty:
                     valor_scada = float(res_scada.values[0])
-                    # REGLA: Solo escribir si es mayor a cero. De lo contrario, se queda el de Sheets.
+                    # REGLA: Si es 0 o negativo, NO se sobreescribe el dato de Sheets
                     if valor_scada > 0:
                         df.loc[df['POZOS'] == p_id, col_excel] = round(valor_scada, 2)
         
         conn_s.close()
-        logs.append("🧬 SCADA: Valores procesados (Se omitieron ceros/negativos).")
+        logs.append("🧬 SCADA: Sincronizado (Ceros y negativos omitidos).")
 
         # 3. MySQL (Tabla INFORME)
-        progreso_bar.progress(60, text="Actualizando MySQL...")
         p_my = urllib.parse.quote_plus(DB_INFORME['password'])
         eng_my = create_engine(f"mysql+mysqlconnector://{DB_INFORME['user']}:{p_my}@{DB_INFORME['host']}/{DB_INFORME['database']}")
         with eng_my.begin() as conn:
             conn.execute(text("TRUNCATE TABLE INFORME"))
             df_sql = df.replace({np.nan: None, pd.NaT: None})
             df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
-        logs.append("✅ MySQL: Tabla INFORME actualizada.")
+        logs.append("✅ MySQL: Actualizado.")
 
         # 4. Postgres (QGIS)
-        progreso_bar.progress(80, text="Sincronizando Postgres...")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
         
+        filas_pg = 0
         with eng_pg.begin() as conn:
             for _, row in df.iterrows():
                 id_val = str(row['ID']).strip() if pd.notnull(row['ID']) else None
@@ -128,15 +120,9 @@ def ejecutar_sincronizacion_total():
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
                             val = row[csv_col]
-                            # Limpieza de datos antes de Postgres
+                            # Limpieza para Postgres
                             if pd.isna(val) or str(val).lower() == 'nan': clean_val = None
-                            elif pg_col == '_Ultima_actualizacion':
-                                if isinstance(val, str):
-                                    try: clean_val = pd.to_datetime(val)
-                                    except: clean_val = None
-                                else: clean_val = val
                             else: clean_val = val
-                            
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
                     
@@ -144,16 +130,15 @@ def ejecutar_sincronizacion_total():
                         res = conn.execute(text(f'UPDATE public."Pozos" SET {", ".join(sets)} WHERE "ID" = :id'), params)
                         filas_pg += res.rowcount
         
-        duracion = round(time.time() - start_time, 2)
-        logs.append(f"🐘 Postgres: {filas_pg} filas actualizadas.")
-        logs.append(f"⏱️ Tiempo: {duracion}s | 🚀 {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
+        logs.append(f"🐘 Postgres: {filas_pg} registros sincronizados.")
+        logs.append(f"🚀 EXITOSO: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         progreso_bar.progress(100)
         return logs
     except Exception as e:
         return [f"❌ Error: {str(e)}"]
 
-@st.cache_data(ttl=30)
-def obtener_datos_postgres():
+@st.cache_data(ttl=10)
+def consultar_postgres():
     try:
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
@@ -165,44 +150,41 @@ def obtener_datos_postgres():
 
 st.title("🖥️ MIAA Control Center")
 
-# Usamos st.tabs para separar las vistas
-tab1, tab2 = st.tabs(["🚀 Ejecución y Logs", "📊 Base de Datos Postgres"])
+# Usar Radio en el Sidebar como alternativa a pestañas si st.tabs falla por el rerun
+menu = st.sidebar.radio("MENÚ PRINCIPAL", ["Control de Sincronización", "Base de Datos Postgres"])
 
-with tab1:
+if menu == "Control de Sincronización":
+    st.subheader("🎮 Panel de Operación")
     with st.container(border=True):
         col1, col2, col3, col4, col5 = st.columns([1.5, 1, 1, 1.5, 1.5])
-        with col1: modo = st.selectbox("Modo", ["Diario", "Periódico"], key="modo_exe")
-        with col2: h_in = st.number_input("Hora", 0, 23, value=0, key="hora_exe")
-        with col3: m_in = st.number_input("Min/Int", 0, 59, value=0, key="min_exe")
+        with col1: modo = st.selectbox("Modo", ["Diario", "Periódico"])
+        with col2: h_in = st.number_input("Hora", 0, 23, value=0)
+        with col3: m_in = st.number_input("Min/Int", 0, 59, value=1)
         with col4:
             if "running" not in st.session_state: st.session_state.running = False
-            if st.button("🛑 PARAR" if st.session_state.running else "▶️ INICIAR", use_container_width=True):
+            label = "🛑 PARAR" if st.session_state.running else "▶️ INICIAR"
+            if st.button(label, use_container_width=True):
                 st.session_state.running = not st.session_state.running
                 st.rerun()
         with col5:
-            if st.button("🚀 FORZAR CARGA", use_container_width=True):
+            if st.button("🚀 FORZAR AHORA", use_container_width=True):
                 st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-    # Consola de logs
-    logs_display = st.session_state.get('last_logs', ["SISTEMA INICIADO..."])
-    st.markdown(f'''
-        <div style="background-color:black;color:#00FF00;padding:15px;font-family:monospace;height:300px;overflow-y:auto;border-radius:5px;">
-            {"<br>".join(logs_display)}
-        </div>
-    ''', unsafe_allow_html=True)
+    log_txt = "<br>".join(st.session_state.get('last_logs', ["SISTEMA EN ESPERA..."]))
+    st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:monospace;height:400px;overflow-y:auto;border-radius:5px;">{log_txt}</div>', unsafe_allow_html=True)
 
-with tab2:
-    st.subheader("Contenido actual en Postgres (public.Pozos)")
-    if st.button("🔄 Actualizar Vista"):
+else:
+    st.subheader("🗄️ Tabla 'Pozos' en Postgres")
+    if st.button("🔄 Refrescar Tabla"):
         st.cache_data.clear()
     
-    df_pg = obtener_datos_postgres()
+    df_pg = consultar_postgres()
     if not df_pg.empty:
-        st.dataframe(df_pg, use_container_width=True, height=600)
+        st.dataframe(df_pg, use_container_width=True, height=700)
     else:
-        st.error("No se pudo conectar o la tabla está vacía.")
+        st.warning("No hay conexión con la base de datos Postgres.")
 
-# --- 4. LÓGICA DEL RELOJ ---
+# --- 4. RELOJ (SIDEBAR PARA NO INTERRUMPIR) ---
 if st.session_state.running:
     ahora = datetime.datetime.now(zona_local)
     if modo == "Diario":
@@ -215,6 +197,7 @@ if st.session_state.running:
         prox = ahora.replace(hour=0, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=sig)
 
     diff = prox - ahora
+    st.sidebar.divider()
     st.sidebar.metric("⏳ PRÓXIMA CARGA EN:", str(diff).split('.')[0])
     
     if diff.total_seconds() <= 1:
