@@ -178,12 +178,12 @@ def ejecutar_sincronizacion_total():
 
 # --- 3. INTERFAZ ---
 
-tab1, tab2 = st.tabs(["🔄 Sincronización Manual", "📊 Datos Postgres (QGIS)"])
+tab1, tab2 = st.tabs(["🔄 Sincronizador", "📊 Datos (QGIS)"])
 
 with tab1:
     st.title("🖥️ MIAA Control Center")
     with st.container(border=True):
-        if st.button("🚀 FORZAR CARGA DE DATOS", use_container_width=True, type="primary"):
+        if st.button("🚀 CARGA DE DATOS", use_container_width=True, type="primary"):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
     if 'last_logs' not in st.session_state: st.session_state.last_logs = ["SISTEMA LISTO."]
@@ -191,7 +191,7 @@ with tab1:
     st.markdown(f'<div class="consola-log">{log_txt}</div>', unsafe_allow_html=True)
 
 with tab2:
-    st.title("🖥️ MIAA Control Center")
+    st.title("🖥️ Sincronizador")
     if st.button("🔄 Refrescar Tabla", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -200,4 +200,5 @@ with tab2:
     eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
     df_pg = pd.read_sql('SELECT * FROM public."Pozos" LIMIT 100', eng_pg)
     st.dataframe(df_pg, use_container_width=True)
+
 
