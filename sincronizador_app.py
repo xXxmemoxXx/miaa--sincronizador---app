@@ -12,13 +12,39 @@ import numpy as np
 zona_local = pytz.timezone('America/Mexico_City')
 st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
 
+# CSS para forzar que las pestañas parezcan pestañas y diseño de interfaz
+st.markdown("""
+    <style>
+    /* Estilo para las pestañas */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #1e1e1e;
+        padding: 10px 10px 0px 10px;
+        border-radius: 10px 10px 0px 0px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 45px;
+        white-space: pre-wrap;
+        background-color: #333333;
+        border-radius: 5px 5px 0px 0px;
+        color: white;
+        gap: 1px;
+        padding: 10px 20px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #007bff !important;
+        border-bottom: 2px solid white !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 # Credenciales
 DB_SCADA = {'host': 'miaa.mx', 'user': 'miaamx_dashboard', 'password': 'h97_p,NQPo=l', 'database': 'miaamx_telemetria'}
 DB_INFORME = {'host': 'miaa.mx', 'user': 'miaamx_telemetria2', 'password': 'bWkrw1Uum1O&', 'database': 'miaamx_telemetria2'}
 DB_POSTGRES = {'user': 'map_tecnica', 'pass': 'M144.Tec', 'host': 'ti.miaa.mx', 'db': 'qgis', 'port': 5432}
 CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7Pqj86NCVBxKnuw/gviz/tq?tqx=out:csv&sheet=informe'
 
-# Mapeos Completos
+# Mapeos
 MAPEO_POSTGRES = {
     'GASTO_(l.p.s.)':                  '_Caudal',
     'PRESION_(kg/cm2)':                '_Presion',
@@ -63,20 +89,6 @@ MAPEO_SCADA = {
         "SUMERGENCIA":"PZ_003_SUMERG",
         "NIVEL_DINAMICO":"PZ_003_NIV_EST",
     },
-    "P-005A": {
-"GASTO_(l.p.s.)":"PZ_RP_005_TRHDAS_CAU_INS",
-"PRESION_(kg/cm2)":"PZ_RP_005_TRHDAS_PRES_INS",
-"VOLTAJE_L1":"PZ_RP_005_TRHDAS_VOL_L1_L2",
-"VOLTAJE_L2":"PZ_RP_005_TRHDAS_VOL_L2_L3",
-"VOLTAJE_L3":"PZ_RP_005_TRHDAS_VOL_L1_L3",
-"AMP_L1":"PZ_RP_005_TRHDAS_CORR_L1",
-"AMP_L2":"PZ_RP_005_TRHDAS_CORR_L2",
-"AMP_L3":"PZ_RP_005_TRHDAS_CORR_L3",
-"LONGITUD_DE_COLUMNA":"PZ_RP_005_TRHDAS_LONG_COLUM",
-"SUMERGENCIA":"PZ_RP_005_TRHDAS_SUMERG",
-"NIVEL_DINAMICO":"PZ_RP_005_TRHDAS_NIV_EST",
-},
-    
 }
 
 # --- 2. LÓGICA DE DATOS ---
@@ -107,7 +119,7 @@ def ejecutar_sincronizacion_total():
             df['FECHA_ACTUALIZACION'] = pd.to_datetime(df['FECHA_ACTUALIZACION'], errors='coerce')
         logs.append(f"✅ Google Sheets: {len(df)} registros leídos.")
         
-        # 2. SCADA con Regla de Validación (Omitir 0 o Negativos)
+        # 2. SCADA con Regla de Validación
         progreso_bar.progress(40, text="Consultando SCADA y validando valores... 40%")
         conn_s = mysql.connector.connect(**DB_SCADA)
         all_tags = []
@@ -121,12 +133,12 @@ def ejecutar_sincronizacion_total():
                 val_scada = df_scada.loc[df_scada['NAME'] == tag_name, 'VALUE']
                 if not val_scada.empty:
                     valor_num = float(val_scada.values[0])
-                    # REGLA: Solo inyectar si es mayor a 0, de lo contrario mantener Sheets
+                    # Regla P-002: Solo inyectar si es positivo
                     if valor_num > 0:
                         if col_excel in df.columns:
                             df.loc[df['POZOS'] == p_id, col_excel] = round(valor_num, 2)
                     else:
-                        logs.append(f"⚠️ {p_id}: Valor {valor_num} en {col_excel} omitido (se usó Sheets).")
+                        logs.append(f"⚠️ {p_id}: Valor {valor_num} en {col_excel} omitido (Sheets preservado).")
         conn_s.close()
         logs.append("🧬 SCADA: Valores inyectados correctamente.")
         
@@ -140,7 +152,7 @@ def ejecutar_sincronizacion_total():
             df_sql.to_sql('INFORME', con=conn, if_exists='append', index=False)
         logs.append("✅ MySQL: Tabla INFORME actualizada.")
         
-        # 4. Postgres (Limpieza de comas integrada)
+        # 4. Postgres con limpieza
         progreso_bar.progress(85, text="Sincronizando con QGIS (Postgres)... 85%")
         p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
         eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
@@ -153,7 +165,6 @@ def ejecutar_sincronizacion_total():
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
                             val = row[csv_col]
-                            # Limpieza para evitar InvalidTextRepresentation
                             if pd.isna(val) or str(val).lower() == 'nan': clean_val = None
                             elif pg_col == '_Ultima_actualizacion': clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
                             elif isinstance(val, str):
@@ -161,7 +172,6 @@ def ejecutar_sincronizacion_total():
                                 try: clean_val = float(s_val)
                                 except: clean_val = val
                             else: clean_val = val
-                                
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
                     if sets:
@@ -170,23 +180,21 @@ def ejecutar_sincronizacion_total():
         
         logs.append(f"🐘 Postgres: {filas_pg} filas actualizadas.")
         logs.append(f"⏱️ DURACIÓN: {round(time.time() - start_time, 2)}s.")
-        logs.append(f"🚀 SINCRO EXITOSA: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
+        logs.append(f"🚀 ÉXITO: {datetime.datetime.now(zona_local).strftime('%H:%M:%S')}")
         progreso_bar.progress(100, text="Sincronización finalizada al 100%")
         return logs
     except Exception as e:
         return [f"❌ Error crítico: {str(e)}"]
 
-# --- 3. INTERFAZ CON PESTAÑAS ---
+# --- 3. INTERFAZ (ORDEN SOLICITADO) ---
 
-# --- 3. INTERFAZ ---
-
-st.title("🖥️ MIAA Control Center")
-
+# Pestañas arriba de todo
 tab1, tab2 = st.tabs(["🔄 Sincronización Manual", "📊 Datos Postgres (QGIS)"])
 
 with tab1:
+    st.title("🖥️ MIAA Control Center") # Título debajo de pestañas
     with st.container(border=True):
-        st.subheader("Acciones del Sistema")
+        st.subheader("Control de Carga")
         if st.button("🚀 FORZAR CARGA DE DATOS", use_container_width=True, type="primary"):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
 
@@ -196,6 +204,7 @@ with tab1:
     st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:300px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
 
 with tab2:
+    st.title("🖥️ MIAA Control Center") # Título también aquí para consistencia
     st.subheader("Datos actuales en QGIS")
     if st.button("🔄 Refrescar Tabla"):
         st.cache_data.clear()
@@ -205,5 +214,3 @@ with tab2:
         st.dataframe(res, use_container_width=True, hide_index=True)
     else:
         st.error(res)
-
-
