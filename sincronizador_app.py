@@ -177,3 +177,4 @@ with tab_postgres:
         st.dataframe(df_pozos, use_container_width=True, height=600)
     else:
         st.warning("No hay datos disponibles en la tabla de Postgres.")
+
