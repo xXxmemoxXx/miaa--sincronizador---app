@@ -132,7 +132,20 @@ def ejecutar_sincronizacion_total():
                     for csv_col, pg_col in MAPEO_POSTGRES.items():
                         if csv_col in df.columns:
                             val = row[csv_col]
-                            clean_val = None if pd.isna(val) or str(val).lower() == 'nan' else (val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val)
+                            
+                            # --- LIMPIEZA DE COMAS PARA EVITAR EL ERROR DE TRACEBACK ---
+                            if pd.isna(val) or str(val).lower() == 'nan':
+                                clean_val = None
+                            elif pg_col == '_Ultima_actualizacion':
+                                clean_val = val.to_pydatetime() if hasattr(val, 'to_pydatetime') else val
+                            elif isinstance(val, str):
+                                # Eliminamos comas para que Postgres lo acepte como double precision
+                                s_val = val.replace(',', '')
+                                try: clean_val = float(s_val)
+                                except: clean_val = val
+                            else:
+                                clean_val = val
+                                
                             params[pg_col] = clean_val
                             sets.append(f'"{pg_col}" = :{pg_col}')
                     if sets:
@@ -153,7 +166,7 @@ def ejecutar_sincronizacion_total():
 
 st.title("🖥️ MIAA Control Center")
 
-tab1, tab2 = st.tabs(["🔄 Sincronización", "📊 Vista Postgres"])
+tab1, tab2 = st.tabs(["🔄 Control de Sincronización", "📊 Datos Postgres (QGIS)"])
 
 with tab1:
     with st.container(border=True):
@@ -171,7 +184,7 @@ with tab1:
             if st.button("🚀 FORZAR CARGA", use_container_width=True):
                 st.session_state.last_logs = ejecutar_sincronizacion_total()
 
-    # Consola blindada
+    # Consola blindada contra TypeError
     if 'last_logs' not in st.session_state: st.session_state.last_logs = ["SISTEMA EN ESPERA..."]
     log_txt = "<br>".join([str(l) for l in st.session_state.last_logs])
     st.markdown(f'<div style="background-color:black;color:#00FF00;padding:15px;font-family:Consolas;height:250px;overflow-y:auto;border-radius:5px;line-height:1.6;">{log_txt}</div>', unsafe_allow_html=True)
