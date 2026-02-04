@@ -62,11 +62,20 @@ CSV_URL = 'https://docs.google.com/spreadsheets/d/1tHh47x6DWZs_vCaSCHshYPJrQKUW7
 
 # Mapeos originales
 MAPEO_POSTGRES = {
-    'GASTO_(l.p.s.)': '_Caudal', 'PRESION_(kg/cm2)': '_Presion', 'LONGITUD_DE_COLUMNA': '_Long_colum',
-    'COLUMNA_DIAMETRO_1': '_Diam_colum', 'TIPO_COLUMNA': '_Tipo_colum', 'SECTOR_HIDRAULICO': '_Sector',
-    'NIVEL_DINAMICO_(mts)': '_Nivel_Din', 'NIVEL_ESTATICO_(mts)': '_Nivel_Est', 'EXTRACCION_MENSUAL_(m3)': '_Vm_estr',
-    'HORAS_DE_OPERACIÓN_DIARIA_(hrs)': '_Horas_op', 'DISTRITO_1': '_Distrito', 'ESTATUS': '_Estatus',
-    'TELEMETRIA': '_Telemetria', 'FECHA_ACTUALIZACION': '_Ultima_actualizacion'
+    'GASTO_(l.p.s.)':                  '_Caudal',
+    'PRESION_(kg/cm2)':                '_Presion',
+    'LONGITUD_DE_COLUMNA':             '_Long_colum',
+    'COLUMNA_DIAMETRO_1':              '_Diam_colum',
+    'TIPO_COLUMNA':                    '_Tipo_colum',
+    'SECTOR_HIDRAULICO':               '_Sector',
+    'NIVEL_DINAMICO_(mts)':            '_Nivel_Din',
+    'NIVEL_ESTATICO_(mts)':            '_Nivel_Est',
+    'EXTRACCION_MENSUAL_(m3)':         '_Vm_estr',
+    'HORAS_DE_OPERACIÓN_DIARIA_(hrs)': '_Horas_op',
+    'DISTRITO_1':                      '_Distrito',
+    'ESTATUS':                         '_Estatus',
+    'TELEMETRIA':                      '_Telemetria',
+    'FECHA_ACTUALIZACION':             '_Ultima_actualizacion'
 }
 
 MAPEO_SCADA = {
@@ -2231,6 +2240,7 @@ with tab2:
     eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
     df_pg = pd.read_sql('SELECT * FROM public."Pozos" LIMIT 500', eng_pg)
     st.dataframe(df_pg, use_container_width=True)
+
 
 
 
