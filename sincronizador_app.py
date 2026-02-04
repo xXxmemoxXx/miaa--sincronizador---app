@@ -1,3 +1,4 @@
+# --- 1. CONFIGURACIÓN ---PARA LA VERSION DE APLICACION CELULAR 
 import streamlit as st
 import pandas as pd
 import urllib.parse
@@ -2221,7 +2222,7 @@ def ejecutar_sincronizacion_total():
 tab1, tab2 = st.tabs(["🔄 Sincronizador", "📊 Datos (QGIS)"])
 
 with tab1:
-    st.title("🖥️ MIAA Sincronizador web")
+    st.title("🖥️ MIAA Sincronizador app")
     with st.container(border=True):
         if st.button("🚀 CARGA DE DATOS", use_container_width=True, type="primary"):
             st.session_state.last_logs = ejecutar_sincronizacion_total()
@@ -2240,6 +2241,7 @@ with tab2:
     eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
     df_pg = pd.read_sql('SELECT * FROM public."Pozos" LIMIT 500', eng_pg)
     st.dataframe(df_pg, use_container_width=True)
+
 
 
 
