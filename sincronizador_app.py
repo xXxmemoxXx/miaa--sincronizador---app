@@ -10,7 +10,7 @@ import numpy as np
 
 # --- 1. CONFIGURACIÓN ---
 zona_local = pytz.timezone('America/Mexico_City')
-st.set_page_config(page_title="MIAA Control Maestro", layout="wide")
+st.set_page_config(page_title="MIAA-Sincronizador", layout="wide")
 
 # CSS: Pestañas Adaptativas y Consola Blanca con Letras Azul Oscuro
 st.markdown("""
@@ -2229,8 +2229,9 @@ with tab2:
     # Visualización básica de Postgres para no romper lógica
     p_pg = urllib.parse.quote_plus(DB_POSTGRES['pass'])
     eng_pg = create_engine(f"postgresql://{DB_POSTGRES['user']}:{p_pg}@{DB_POSTGRES['host']}:{DB_POSTGRES['port']}/{DB_POSTGRES['db']}")
-    df_pg = pd.read_sql('SELECT * FROM public."Pozos" LIMIT 100', eng_pg)
+    df_pg = pd.read_sql('SELECT * FROM public."Pozos" LIMIT 500', eng_pg)
     st.dataframe(df_pg, use_container_width=True)
+
 
 
 
