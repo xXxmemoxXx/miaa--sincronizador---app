@@ -9,4 +9,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping Streamlit App
-        run: curl -I https://miaa-sincronizador-version-app.streamlit.app
+        run: curl -I https://miaa-sincronizador-ver-app.streamlit.app/
